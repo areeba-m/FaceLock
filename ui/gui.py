@@ -110,7 +110,7 @@ class FaceLockGUI:
         if not self.video_capture.isOpened():
             messagebox.showerror("Error", "Cannot access camera")
             return
-        
+
         # Perform authentication in thread
         self.status_label.config(text="Authenticating...")
         thread = threading.Thread(target=self._authenticate_thread, 
@@ -168,6 +168,13 @@ class FaceLockGUI:
             messagebox.showerror("Error", "Cannot access camera")
             return
         
+        # Set camera properties for stability
+        self.video_capture.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
+        self.video_capture.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+        self.video_capture.set(cv2.CAP_PROP_FPS, 30)
+        self.video_capture.set(cv2.CAP_PROP_AUTOFOCUS, 1)
+
+
         # Perform registration in thread
         self.status_label.config(text="Starting registration...")
         thread = threading.Thread(target=self._register_thread, 
