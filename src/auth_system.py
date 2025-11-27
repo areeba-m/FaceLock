@@ -250,7 +250,20 @@ class AuthenticationSystem:
                     time.sleep(0.2)
                     continue
                 
+                # 👉 FIX #1: define face_location
+                face_location = face_locations[0]
+
+                # 👉 FIX #2: define landmarks before using them
+                landmarks = face_recognition_module.get_face_landmarks(frame, face_location)
+
+                if landmarks is None:
+                    print("Landmarks not detected, retrying...")
+                    failed_attempts += 1
+                    time.sleep(0.2)
+                    continue
+
                 # Perform liveness check
+                
                 liveness_result = anti_spoofing_module.perform_liveness_check(frame, face_location, landmarks)
                 
                 if liveness_result['overall_score'] < 0.5:
@@ -284,26 +297,30 @@ class AuthenticationSystem:
             average_encoding = np.mean(face_encodings, axis=0)
             
             # Hash password and save user
-            password_hash = encryption_manager.hash_password(password)
+            #password_hash = encryption_manager.hash_password(password)
             
-            result = db_manager.add_user(username, password_hash, average_encoding)
+            result = db_manager.create_user(username, password)#, average_encoding)
             
-            if not result['success']:
-                return result
+            if result is None:
+                return {'success': False, 'message': 'Username already exists or could not create user'}
+
+             # Store face embeddings captured during registration
+            if not db_manager.store_face_embeddings(result, face_encodings):
+                return {'success': False, 'message': 'Failed to store facial data'}
             
             # Generate TOTP secret
             secret = totp_handler.generate_secret()
-            qr_image = totp_handler.get_qr_code(username, secret)
+            qr_image = totp_handler.generate_qr_code(username, secret)
             
             # Store TOTP secret
-            db_manager.store_totp_secret(result['user_id'], secret)
+            db_manager.store_totp_secret(result, secret)
             
             return {
                 'success': True,
                 'message': 'User registered successfully!',
                 'qr_code': qr_image,
                 'secret': secret,
-                'user_id': result['user_id']
+                'user_id': result
             }
             
         except Exception as e:
@@ -457,6 +474,9 @@ class AuthenticationSystem:
         
         # Get TOTP secret
         secret = db_manager.get_totp_secret(user_id)
+        print("secret:", repr(secret))
+        if secret:
+            secret = secret.strip()
         if not secret:
             result['message'] = "TOTP not configured for user"
             return result
