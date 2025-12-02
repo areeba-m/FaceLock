@@ -1,345 +1,278 @@
 """
-Anti-spoofing module implementing multiple liveness detection techniques:
-1. Blink Detection - Eye Aspect Ratio (EAR)
-2. Head Movement Detection - Pose estimation
-3. Texture Analysis - Local Binary Patterns (LBP)
+Anti-spoofing module with improved blink detection using dlib landmarks
+1. Blink Detection (minimum 2 blinks required) - using EAR method
+2. Head Movement Detection
 """
 import cv2
 import numpy as np
+import dlib
 from scipy.spatial import distance
-from typing import Optional, Tuple, List
+from typing import Optional, Tuple, List, Dict
 from collections import deque
-from sklearn.svm import SVC
-from sklearn.preprocessing import StandardScaler
-import pickle
-import os
-from config.settings import (
-    EYE_AR_THRESH,
-    EYE_AR_CONSEC_FRAMES,
-    HEAD_MOVEMENT_THRESHOLD,
-    LBP_THRESHOLD,
-    MODELS_DIR
-)
+from imutils import face_utils
 
 
 class AntiSpoofingModule:
-    """Implements multiple anti-spoofing techniques"""
+    """Anti-spoofing with improved blink and movement detection"""
     
     def __init__(self):
-        self.eye_ar_history = deque(maxlen=EYE_AR_CONSEC_FRAMES)
-        self.blink_counter = 0
+        # Initialize dlib's face detector and landmark predictor
+        self.detector = dlib.get_frontal_face_detector()
+        try:
+            # Try to load the shape predictor model
+            self.landmark_predict = dlib.shape_predictor(
+                'models/shape_predictor_68_face_landmarks.dat'
+            )
+            self.use_dlib = True
+            print("✓ Dlib landmark predictor loaded successfully")
+        except:
+            print("⚠ Dlib shape predictor not found. Fallback mode enabled.")
+            print("  Download from: http://dlib.net/files/shape_predictor_68_face_landmarks.dat.bz2")
+            self.use_dlib = False
+        
+        # Eye landmark indices for dlib 68-point model
+        (self.L_start, self.L_end) = face_utils.FACIAL_LANDMARKS_IDXS["left_eye"]
+        (self.R_start, self.R_end) = face_utils.FACIAL_LANDMARKS_IDXS['right_eye']
+        
+        # Blink detection parameters - based on research papers
+        self.blink_thresh = 0.21  # EAR threshold (research suggests 0.2-0.25)
+        self.succ_frame = 2  # Consecutive frames below threshold to count as blink
+        self.count_frame = 0  # Current consecutive frames below threshold
         self.total_blinks = 0
+        self.required_blinks = 2
+        
+        # EAR history for analysis
+        self.ear_history = deque(maxlen=30)
+        
+        # Head movement tracking
+        self.face_center_history = deque(maxlen=30)
+        self.total_movement = 0
+        self.movement_threshold = 30  # Pixels of movement required
+        
+        # Frame counter
         self.frame_counter = 0
-        
-        # Head pose history
-        self.pose_history = deque(maxlen=30)
-        
-        # LBP model
-        self.lbp_model_path = os.path.join(MODELS_DIR, 'lbp_model.pkl')
-        self.lbp_scaler_path = os.path.join(MODELS_DIR, 'lbp_scaler.pkl')
-        self._init_lbp_model()
     
-    def _init_lbp_model(self):
-        """Initialize or load LBP classifier"""
-        if os.path.exists(self.lbp_model_path) and os.path.exists(self.lbp_scaler_path):
-            with open(self.lbp_model_path, 'rb') as f:
-                self.lbp_classifier = pickle.load(f)
-            with open(self.lbp_scaler_path, 'rb') as f:
-                self.lbp_scaler = pickle.load(f)
-        else:
-            # Create simple model (will improve with training)
-            self.lbp_classifier = SVC(kernel='linear', probability=True)
-            self.lbp_scaler = StandardScaler()
-            self._create_initial_lbp_model()
-    
-    def _create_initial_lbp_model(self):
-        """Create initial LBP model with synthetic data"""
-        # Create synthetic training data
-        n_samples = 100
-        
-        # Simulate real face features (higher variance)
-        real_features = np.random.randn(n_samples, 59) * 30 + 50
-        real_labels = np.ones(n_samples)
-        
-        # Simulate fake face features (lower variance, different mean)
-        fake_features = np.random.randn(n_samples, 59) * 15 + 70
-        fake_labels = np.zeros(n_samples)
-        
-        X = np.vstack([real_features, fake_features])
-        y = np.hstack([real_labels, fake_labels])
-        
-        # Train model
-        X_scaled = self.lbp_scaler.fit_transform(X)
-        self.lbp_classifier.fit(X_scaled, y)
-        
-        # Save model
-        with open(self.lbp_model_path, 'wb') as f:
-            pickle.dump(self.lbp_classifier, f)
-        with open(self.lbp_scaler_path, 'wb') as f:
-            pickle.dump(self.lbp_scaler, f)
+    def reset_counters(self):
+        """Reset all counters for new session"""
+        self.count_frame = 0
+        self.total_blinks = 0
+        self.ear_history.clear()
+        self.face_center_history.clear()
+        self.total_movement = 0
+        self.frame_counter = 0
     
     @staticmethod
-    def eye_aspect_ratio(eye_landmarks: List) -> float:
+    def calculate_EAR(eye):
         """
         Calculate Eye Aspect Ratio (EAR)
         EAR = (||p2-p6|| + ||p3-p5||) / (2 * ||p1-p4||)
         """
-        # Vertical eye distances
-        A = distance.euclidean(eye_landmarks[1], eye_landmarks[5])
-        B = distance.euclidean(eye_landmarks[2], eye_landmarks[4])
+        # Calculate the vertical distances
+        y1 = distance.euclidean(eye[1], eye[5])
+        y2 = distance.euclidean(eye[2], eye[4])
         
-        # Horizontal eye distance
-        C = distance.euclidean(eye_landmarks[0], eye_landmarks[3])
+        # Calculate the horizontal distance
+        x1 = distance.euclidean(eye[0], eye[3])
         
-        # Calculate EAR
-        ear = (A + B) / (2.0 * C)
-        return ear
+        # Avoid division by zero
+        if x1 < 1e-6:
+            return 0.3
+        
+        # Calculate the EAR
+        EAR = (y1 + y2) / (2.0 * x1)
+        return EAR
     
-    def detect_blink(self, landmarks: dict) -> Tuple[bool, int]:
+    def detect_blink_dlib(self, frame: np.ndarray, gray_frame: np.ndarray) -> Tuple[bool, int, float]:
         """
-        Detect blinks using Eye Aspect Ratio
-        Returns (blink_detected, total_blinks)
+        Detect blinks using dlib landmarks and EAR method
+        Returns (blink_detected, total_blinks, avg_EAR)
         """
-        if not landmarks or 'left_eye' not in landmarks or 'right_eye' not in landmarks:
-            return False, self.total_blinks
-        
-        # Calculate EAR for both eyes
-        left_ear = self.eye_aspect_ratio(landmarks['left_eye'])
-        right_ear = self.eye_aspect_ratio(landmarks['right_eye'])
-        
-        # Average EAR
-        ear = (left_ear + right_ear) / 2.0
-        
-        # Add to history
-        self.eye_ar_history.append(ear)
-        
-        # Check for blink
         blink_detected = False
-        if ear < EYE_AR_THRESH:
-            self.blink_counter += 1
-        else:
-            if self.blink_counter >= EYE_AR_CONSEC_FRAMES:
-                self.total_blinks += 1
-                blink_detected = True
-            self.blink_counter = 0
-        
-        self.frame_counter += 1
-        
-        return blink_detected, self.total_blinks
-    
-    def estimate_head_pose(self, landmarks: dict, frame_shape: Tuple) -> Optional[Tuple[float, float, float]]:
-        """
-        Estimate head pose (yaw, pitch, roll) from facial landmarks
-        """
-        if not landmarks or 'nose_tip' not in landmarks or 'chin' not in landmarks:
-            return None
+        avg_EAR = 0.3
         
         try:
-            # Image dimensions
-            size = frame_shape
+            # Detect faces
+            faces = self.detector(gray_frame)
             
-            # 2D image points from landmarks
-            image_points = np.array([
-                landmarks['nose_tip'][2],      # Nose tip
-                landmarks['chin'][8],           # Chin
-                landmarks['left_eye'][0],       # Left eye left corner
-                landmarks['right_eye'][3],      # Right eye right corner
-                landmarks['top_lip'][0],        # Left mouth corner
-                landmarks['bottom_lip'][0]      # Right mouth corner
-            ], dtype="double")
+            if len(faces) == 0:
+                # No face detected - reset counter
+                self.count_frame = 0
+                return False, self.total_blinks, 0.3
             
-            # 3D model points (approximate)
-            model_points = np.array([
-                (0.0, 0.0, 0.0),             # Nose tip
-                (0.0, -330.0, -65.0),        # Chin
-                (-225.0, 170.0, -135.0),     # Left eye left corner
-                (225.0, 170.0, -135.0),      # Right eye right corner
-                (-150.0, -150.0, -125.0),    # Left mouth corner
-                (150.0, -150.0, -125.0)      # Right mouth corner
-            ])
+            # Use first face
+            face = faces[0]
             
-            # Camera internals
-            focal_length = size[1]
-            center = (size[1] / 2, size[0] / 2)
-            camera_matrix = np.array([
-                [focal_length, 0, center[0]],
-                [0, focal_length, center[1]],
-                [0, 0, 1]
-            ], dtype="double")
+            # Get facial landmarks
+            shape = self.landmark_predict(gray_frame, face)
+            shape = face_utils.shape_to_np(shape)
             
-            dist_coeffs = np.zeros((4, 1))
+            # Extract left and right eye landmarks
+            lefteye = shape[self.L_start:self.L_end]
+            righteye = shape[self.R_start:self.R_end]
             
-            # Solve PnP
-            success, rotation_vector, translation_vector = cv2.solvePnP(
-                model_points,
-                image_points,
-                camera_matrix,
-                dist_coeffs,
-                flags=cv2.SOLVEPNP_ITERATIVE
-            )
+            # Calculate EAR for both eyes
+            left_EAR = self.calculate_EAR(lefteye)
+            right_EAR = self.calculate_EAR(righteye)
             
-            if success:
-                # Convert rotation vector to Euler angles
-                rotation_mat, _ = cv2.Rodrigues(rotation_vector)
-                pose_mat = cv2.hconcat((rotation_mat, translation_vector))
-                _, _, _, _, _, _, euler_angles = cv2.decomposeProjectionMatrix(pose_mat)
+            # Average EAR
+            avg_EAR = (left_EAR + right_EAR) / 2.0
+            
+            # Store in history
+            self.ear_history.append(avg_EAR)
+            
+            # Check if EAR is below threshold
+            if avg_EAR < self.blink_thresh:
+                self.count_frame += 1
+            else:
+                # EAR is above threshold - check if we had a blink
+                if self.count_frame >= self.succ_frame:
+                    self.total_blinks += 1
+                    blink_detected = True
+                    print(f"✓ BLINK DETECTED! Total: {self.total_blinks}/{self.required_blinks} (EAR: {avg_EAR:.3f})")
                 
-                pitch, yaw, roll = euler_angles.flatten()[:3]
-                return (pitch, yaw, roll)
+                # Reset counter
+                self.count_frame = 0
+            
+            return blink_detected, self.total_blinks, avg_EAR
             
         except Exception as e:
-            print(f"Error in pose estimation: {e}")
-        
-        return None
+            print(f"Error in blink detection: {e}")
+            return False, self.total_blinks, 0.3
     
-    def check_head_movement(self, landmarks: dict, frame_shape: Tuple) -> bool:
+    def detect_blink_fallback(self, landmarks: dict) -> Tuple[bool, int]:
         """
-        Check if sufficient head movement detected (anti-spoofing)
+        Fallback blink detection using face_recognition landmarks
+        (Less accurate but works without dlib shape predictor)
         """
-        pose = self.estimate_head_pose(landmarks, frame_shape)
+        if not landmarks or 'left_eye' not in landmarks or 'right_eye' not in landmarks:
+            self.count_frame = 0
+            return False, self.total_blinks
         
-        if pose is None:
-            return False
-        
-        self.pose_history.append(pose)
-        
-        if len(self.pose_history) < 2:
-            return False
-        
-        # Calculate movement range
-        poses = np.array(self.pose_history)
-        pitch_range = np.ptp(poses[:, 0])
-        yaw_range = np.ptp(poses[:, 1])
-        
-        # Check if movement exceeds threshold
-        return (pitch_range > HEAD_MOVEMENT_THRESHOLD or 
-                yaw_range > HEAD_MOVEMENT_THRESHOLD)
+        try:
+            left_ear = self.calculate_EAR(landmarks['left_eye'])
+            right_ear = self.calculate_EAR(landmarks['right_eye'])
+            avg_ear = (left_ear + right_ear) / 2.0
+            
+            self.ear_history.append(avg_ear)
+            
+            blink_detected = False
+            
+            if avg_ear < self.blink_thresh:
+                self.count_frame += 1
+            else:
+                if self.count_frame >= self.succ_frame:
+                    self.total_blinks += 1
+                    blink_detected = True
+                    print(f"✓ BLINK DETECTED (fallback)! Total: {self.total_blinks}/{self.required_blinks}")
+                self.count_frame = 0
+            
+            return blink_detected, self.total_blinks
+            
+        except Exception as e:
+            print(f"Error in fallback blink detection: {e}")
+            self.count_frame = 0
+            return False, self.total_blinks
     
-    def extract_lbp_features(self, frame: np.ndarray, face_location: Tuple) -> np.ndarray:
+    def track_head_movement(self, face_location: Tuple) -> Tuple[bool, float]:
         """
-        Extract Local Binary Pattern features for texture analysis
+        Track head movement based on face center position
+        Returns (has_enough_movement, total_movement)
         """
-        top, right, bottom, left = face_location
-        
-        # Extract face region
-        face = frame[top:bottom, left:right]
-        
-        if face.size == 0:
-            return np.zeros(59)
-        
-        # Convert to grayscale
-        if len(face.shape) == 3:
-            gray = cv2.cvtColor(face, cv2.COLOR_BGR2GRAY)
-        else:
-            gray = face
-        
-        # Resize to standard size
-        gray = cv2.resize(gray, (64, 64))
-        
-        # Calculate LBP
-        lbp = self._calculate_lbp(gray)
-        
-        # Calculate histogram
-        hist, _ = np.histogram(lbp.ravel(), bins=59, range=(0, 59))
-        
-        # Normalize
-        hist = hist.astype("float")
-        hist /= (hist.sum() + 1e-7)
-        
-        return hist
-    
-    @staticmethod
-    def _calculate_lbp(image: np.ndarray, radius: int = 1, n_points: int = 8) -> np.ndarray:
-        """
-        Calculate Local Binary Pattern
-        """
-        rows, cols = image.shape
-        lbp = np.zeros((rows, cols), dtype=np.uint8)
-        
-        for i in range(radius, rows - radius):
-            for j in range(radius, cols - radius):
-                center = image[i, j]
-                binary_string = ''
-                
-                for p in range(n_points):
-                    # Calculate coordinates
-                    x = i + int(radius * np.cos(2 * np.pi * p / n_points))
-                    y = j - int(radius * np.sin(2 * np.pi * p / n_points))
-                    
-                    # Compare with center
-                    if image[x, y] >= center:
-                        binary_string += '1'
-                    else:
-                        binary_string += '0'
-                
-                lbp[i, j] = int(binary_string, 2)
-        
-        return lbp
-    
-    def check_texture_liveness(self, frame: np.ndarray, face_location: Tuple) -> Tuple[bool, float]:
-        """
-        Check if face is real using texture analysis
-        Returns (is_real, confidence)
-        """
-        features = self.extract_lbp_features(frame, face_location)
-        features_scaled = self.lbp_scaler.transform([features])
-        
-        prediction = self.lbp_classifier.predict(features_scaled)[0]
-        probability = self.lbp_classifier.predict_proba(features_scaled)[0]
-        
-        confidence = probability[int(prediction)]
-        is_real = prediction == 1 and confidence > LBP_THRESHOLD
-        
-        return is_real, confidence
-    
-    def reset_counters(self):
-        """Reset all counters for new authentication session"""
-        self.eye_ar_history.clear()
-        self.blink_counter = 0
-        self.total_blinks = 0
-        self.frame_counter = 0
-        self.pose_history.clear()
+        try:
+            top, right, bottom, left = face_location
+            center_x = (left + right) / 2
+            center_y = (top + bottom) / 2
+            current_center = (center_x, center_y)
+            
+            if len(self.face_center_history) > 0:
+                prev_center = self.face_center_history[-1]
+                movement = np.sqrt(
+                    (current_center[0] - prev_center[0])**2 + 
+                    (current_center[1] - prev_center[1])**2
+                )
+                self.total_movement += movement
+            
+            self.face_center_history.append(current_center)
+            
+            has_enough = self.total_movement >= self.movement_threshold
+            
+            if has_enough and self.total_movement > self.movement_threshold:
+                print(f"✓ HEAD MOVEMENT DETECTED! Total: {self.total_movement:.1f}px")
+            
+            return has_enough, self.total_movement
+            
+        except Exception as e:
+            print(f"Movement tracking error: {e}")
+            return False, 0
     
     def perform_liveness_check(self, frame: np.ndarray, face_location: Tuple, 
-                              landmarks: dict) -> dict:
+                               landmarks: dict = None) -> Dict:
         """
-        Perform comprehensive liveness check
-        Returns dict with results from all methods
+        Perform liveness check with blink and movement detection
+        Returns dict with results
         """
+        self.frame_counter += 1
+        
         results = {
             'blink_detected': False,
-            'total_blinks': 0,
-            'head_movement': False,
-            'texture_real': False,
-            'texture_confidence': 0.0,
-            'overall_score': 0.0
+            'total_blinks': self.total_blinks,
+            'required_blinks': self.required_blinks,
+            'has_movement': False,
+            'total_movement': self.total_movement,
+            'movement_threshold': self.movement_threshold,
+            'overall_score': 0.0,
+            'is_live': False,
+            'status': '',
+            'ear': 0.3
         }
         
-        # Blink detection
-        blink_detected, total_blinks = self.detect_blink(landmarks)
+        # Convert to grayscale for dlib
+        gray_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        
+        # Detect blinks using dlib if available, otherwise fallback
+        if self.use_dlib:
+            blink_detected, total_blinks, avg_ear = self.detect_blink_dlib(frame, gray_frame)
+            results['ear'] = avg_ear
+        else:
+            blink_detected, total_blinks = self.detect_blink_fallback(landmarks)
+        
         results['blink_detected'] = blink_detected
         results['total_blinks'] = total_blinks
         
-        # Head movement
-        results['head_movement'] = self.check_head_movement(landmarks, frame.shape)
-        
-        # Texture analysis
-        texture_real, texture_conf = self.check_texture_liveness(frame, face_location)
-        results['texture_real'] = texture_real
-        results['texture_confidence'] = texture_conf
+        # Track head movement
+        has_movement, total_movement = self.track_head_movement(face_location)
+        results['has_movement'] = has_movement
+        results['total_movement'] = total_movement
         
         # Calculate overall score
-        score = 0.0
-        if total_blinks >= 1:
-            score += 0.3
-        if results['head_movement']:
-            score += 0.3
-        if texture_real:
-            score += 0.4
+        blink_score = min(total_blinks / self.required_blinks, 1.0) * 0.6
+        movement_score = min(total_movement / self.movement_threshold, 1.0) * 0.4
+        results['overall_score'] = blink_score + movement_score
         
-        results['overall_score'] = score
+        # Check if liveness passed
+        blinks_ok = total_blinks >= self.required_blinks
+        movement_ok = total_movement >= (self.movement_threshold * 0.5)
+        
+        results['is_live'] = blinks_ok and movement_ok
+        
+        # Status message
+        if results['is_live']:
+            results['status'] = "✓ Liveness verified!"
+        else:
+            status_parts = []
+            if not blinks_ok:
+                status_parts.append(f"Blink {total_blinks}/{self.required_blinks}")
+            if not movement_ok:
+                status_parts.append(f"Move head ({total_movement:.0f}/{self.movement_threshold}px)")
+            results['status'] = " | ".join(status_parts)
         
         return results
+    
+    def get_status_text(self) -> str:
+        """Get current status text for display"""
+        blink_status = f"Blinks: {self.total_blinks}/{self.required_blinks}"
+        movement_status = f"Movement: {self.total_movement:.0f}/{self.movement_threshold}px"
+        return f"{blink_status} | {movement_status}"
 
 
 # Singleton instance

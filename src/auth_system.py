@@ -1,5 +1,5 @@
 """
-Main authentication system coordinating all components
+Main authentication system with camera display during registration/login
 """
 import cv2
 import time
@@ -10,17 +10,14 @@ from config.settings import (
     SAMPLE_DELAY,
     MAX_LOGIN_ATTEMPTS,
     LOCKOUT_DURATION,
-    BLINK_DETECTION_FRAMES,
-    CAMERA_INDEX  # Add this import
+    CAMERA_INDEX
 )
 from src.database import db_manager
-# from src.face_recognition_module import face_recognition_module
+from src.face_recognition_module import face_recognition_module
 from src.anti_spoofing import anti_spoofing_module
-# from src.totp_handler import totp_handler
+from src.totp_handler import totp_handler
+from src.encryption import encryption_manager
 
-from .encryption import encryption_manager
-from .totp_handler import totp_handler
-from .face_recognition_module import face_recognition_module
 
 class AuthenticationSystem:
     """Main authentication system"""
@@ -29,314 +26,203 @@ class AuthenticationSystem:
         self.current_user_id = None
         self.session_start_time = None
     
-    # def register_user(self, username: str, password: str, 
-        #              video_capture: cv2.VideoCapture) -> Dict:
-        # """
-        # Register a new user with facial data and TOTP
-        # Returns dict with status and information
-        # """
-        # result = {
-        #     'success': False,
-        #     'message': '',
-        #     'qr_code': None,
-        #     'secret': None
-        # }
+    def register_user(self, username: str, password: str, 
+                     video_capture: cv2.VideoCapture) -> Dict:
+        """
+        Register a new user with facial data and TOTP
+        Shows camera window during face capture
+        """
+        result = {
+            'success': False,
+            'message': '',
+            'qr_code': None,
+            'secret': None,
+            'user_id': None
+        }
         
-        # # Create user account
-        # user_id = db_manager.create_user(username, password)
-        # if user_id is None:
-        #     result['message'] = "Username already exists"
-        #     return result
-        
-        # # Add delay to let camera initialize
-        # time.sleep(1)
-        
-        # # Warm up camera with a few frames
-        # for _ in range(5):
-        #     ret, _ = video_capture.read()
-        #     if not ret:
-        #         time.sleep(0.1)
-
-
-        # # Capture facial samples
-        # print(f"Capturing {REGISTRATION_SAMPLES} face samples...")
-        # face_encodings = []
-        # samples_captured = 0
-        
-        # anti_spoofing_module.reset_counters()
-        
-        # while samples_captured < REGISTRATION_SAMPLES:
-        #     ret, frame = video_capture.read()
-        #     if not ret:
-        #         result['message'] = "Camera error"
-        #         return result
-            
-        #     # Detect face
-        #     face_locations = face_recognition_module.detect_faces(frame)
-            
-        #     if len(face_locations) != 1:
-        #         # Show feedback
-        #         cv2.putText(frame, "Position your face in frame", (10, 30),
-        #                    cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
-        #         cv2.imshow('Registration', frame)
-        #         if cv2.waitKey(1) & 0xFF == ord('q'):
-        #             result['message'] = "Registration cancelled"
-        #             return result
-        #         continue
-            
-        #     face_location = face_locations[0]
-            
-        #     # Get landmarks for liveness check
-        #     landmarks = face_recognition_module.get_face_landmarks(frame, face_location)
-            
-        #     if landmarks:
-        #         # Perform liveness check
-        #         liveness = anti_spoofing_module.perform_liveness_check(
-        #             frame, face_location, landmarks
-        #         )
-                
-        #         # Check if we have enough frames for validation
-        #         if anti_spoofing_module.frame_counter >= BLINK_DETECTION_FRAMES:
-        #             if liveness['overall_score'] < 0.4:
-        #                 cv2.putText(frame, "Liveness check failed - please blink", (10, 30),
-        #                            cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
-        #                 cv2.imshow('Registration', frame)
-        #                 if cv2.waitKey(1) & 0xFF == ord('q'):
-        #                     result['message'] = "Registration cancelled"
-        #                     return result
-        #                 continue
-            
-        #     # Get encoding
-        #     encoding = face_recognition_module.get_face_encoding(frame, face_location)
-            
-        #     if encoding is not None:
-        #         face_encodings.append(encoding)
-        #         samples_captured += 1
-                
-        #         # Visual feedback
-        #         progress = f"Sample {samples_captured}/{REGISTRATION_SAMPLES}"
-        #         face_recognition_module.draw_face_box(frame, face_location, progress)
-        #         cv2.imshow('Registration', frame)
-                
-        #         print(f"Captured sample {samples_captured}/{REGISTRATION_SAMPLES}")
-        #         time.sleep(SAMPLE_DELAY)
-            
-        #     if cv2.waitKey(1) & 0xFF == ord('q'):
-        #         result['message'] = "Registration cancelled"
-        #         return result
-        
-        # cv2.destroyAllWindows()
-        
-        # # Store face encodings
-        # if not db_manager.store_face_embeddings(user_id, face_encodings):
-        #     result['message'] = "Failed to store facial data"
-        #     return result
-        
-        # # Generate TOTP secret
-        # secret = totp_handler.generate_secret()
-        # if not db_manager.store_totp_secret(user_id, secret):
-        #     result['message'] = "Failed to store TOTP secret"
-        #     return result
-        
-        # # Generate QR code
-        # qr_image = totp_handler.generate_qr_code(secret, username)
-        
-        # result['success'] = True
-        # result['message'] = "Registration successful"
-        # result['qr_code'] = qr_image
-        # result['secret'] = secret
-        
-        # return result
-    
-    def register_user(self, username, password, video_capture):
-        """Register a new user with facial recognition"""
         try:
-            # Release old connection and open with DirectShow backend
+            # Check if username exists
+            if db_manager.get_user_by_username(username):
+                result['message'] = "Username already exists"
+                return result
+            
+            # Reinitialize camera with DirectShow
             video_capture.release()
+            time.sleep(0.5)
             video_capture = cv2.VideoCapture(CAMERA_INDEX, cv2.CAP_DSHOW)
             
             if not video_capture.isOpened():
-                return {
-                    'success': False,
-                    'message': 'Failed to open camera with DirectShow backend'
-                }
+                result['message'] = "Failed to open camera"
+                return result
             
             # Set camera properties
             video_capture.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
             video_capture.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
             video_capture.set(cv2.CAP_PROP_FPS, 30)
-            video_capture.set(cv2.CAP_PROP_BUFFERSIZE, 1)  # Reduce buffer
             
-            # Add delay to let camera fully initialize
-            time.sleep(2)
-            
-            # Warm up camera by capturing and discarding frames
+            # Warm up camera
             print("Warming up camera...")
-            for i in range(10):
-                ret, frame = video_capture.read()
-                if ret:
-                    time.sleep(0.1)
+            for _ in range(10):
+                video_capture.read()
+                time.sleep(0.05)
             
-            print("Capturing 5 face samples...")
+            # Reset anti-spoofing
+            anti_spoofing_module.reset_counters()
+            
+            # Create window for camera display
+            cv2.namedWindow('Registration - Face Capture', cv2.WINDOW_NORMAL)
+            cv2.resizeWindow('Registration - Face Capture', 640, 480)
             
             face_encodings = []
-            sample_count = 0
-            failed_attempts = 0
+            samples_captured = 0
+            required_samples = REGISTRATION_SAMPLES
+            last_capture_time = 0
+            max_time = 60  # 60 seconds timeout
+            start_time = time.time()
             
-            # while sample_count < 5 and failed_attempts < 20:
-            #     ret, frame = video_capture.read()
-                
-            #     if not ret:
-            #         print(f"Failed to read frame, retrying... ({failed_attempts + 1}/20)")
-            #         failed_attempts += 1
-            #         time.sleep(0.5)
-            #         continue
-                
-            #     # Flip frame for mirror effect
-            #     frame = cv2.flip(frame, 1)
-                
-            #     # Check for spoofing
-            #     is_real = anti_spoofing_module.detect_spoofing(frame)
-            #     if not is_real:
-            #         print(f"Liveness check failed for sample {sample_count + 1}")
-            #         failed_attempts += 1
-            #         time.sleep(0.2)
-            #         continue
-                
-            #     # Detect and encode faces
-            #     face_locations = face_recognition_module.face_locations(frame, model='hog')
-                
-            #     if not face_locations:
-            #         print(f"No face detected, retrying... (sample {sample_count + 1}/5)")
-            #         failed_attempts += 1
-            #         time.sleep(0.2)
-            #         continue
-                
-            #     face_encodings_batch = face_recognition_module.face_encodings(frame, face_locations)
-                
-            #     if face_encodings_batch:
-            #         face_encodings.append(face_encodings_batch[0])
-            #         sample_count += 1
-            #         print(f"Captured sample {sample_count}/5")
-            #         time.sleep(0.5)  # Delay between samples
-            #     else:
-            #         failed_attempts += 1
-            #         time.sleep(0.2)
+            print(f"Starting face capture. Need {required_samples} samples...")
+            print("Please blink naturally and move your head slightly.")
             
-            while sample_count < 5 and failed_attempts < 20:
+            while samples_captured < required_samples:
+                # Check timeout
+                elapsed = time.time() - start_time
+                if elapsed > max_time:
+                    result['message'] = f"Registration timeout. Captured {samples_captured}/{required_samples} samples."
+                    break
+                
                 ret, frame = video_capture.read()
-                
-                if not ret:
-                    print(f"Failed to read frame, retrying... ({failed_attempts + 1}/20)")
-                    failed_attempts += 1
-                    time.sleep(0.5)
+                if not ret or frame is None:
                     continue
                 
-                # Debug: Check frame properties
-                print(f"Frame shape: {frame.shape}, dtype: {frame.dtype}")
-                
-                # Flip frame for mirror effect
+                # Flip for mirror effect
                 frame = cv2.flip(frame, 1)
+                display_frame = frame.copy()
                 
-                # Detect faces using the correct method
+                # Detect faces
                 face_locations = face_recognition_module.detect_faces(frame)
                 
-                # Debug: Print what detect_faces returned
-                print(f"Faces detected: {len(face_locations)}")
+                if len(face_locations) == 1:
+                    face_location = face_locations[0]
+                    top, right, bottom, left = face_location
+                    
+                    # Get landmarks
+                    landmarks = face_recognition_module.get_face_landmarks(frame, face_location)
+                    
+                    # Perform liveness check
+                    liveness = anti_spoofing_module.perform_liveness_check(
+                        frame, face_location, landmarks
+                    )
+                    
+                    # Draw face box
+                    color = (0, 255, 0) if liveness['is_live'] else (0, 165, 255)
+                    cv2.rectangle(display_frame, (left, top), (right, bottom), color, 2)
+                    
+                    # Show liveness status
+                    cv2.putText(display_frame, f"Blinks: {liveness['total_blinks']}/2", 
+                               (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
+                    cv2.putText(display_frame, f"Movement: {liveness['total_movement']:.0f}px", 
+                               (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
+                    cv2.putText(display_frame, f"Samples: {samples_captured}/{required_samples}", 
+                               (10, 90), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+                    
+                    # Capture sample if enough time passed
+                    current_time = time.time()
+                    can_capture = current_time - last_capture_time >= SAMPLE_DELAY
+                    
+                    # For first few samples, don't require full liveness
+                    # After that, require at least 1 blink
+                    liveness_ok = (samples_captured < 2) or (liveness['total_blinks'] >= 1)
+                    
+                    if can_capture and liveness_ok:
+                        encoding = face_recognition_module.get_face_encoding(frame, face_location)
+                        
+                        if encoding is not None:
+                            face_encodings.append(encoding)
+                            samples_captured += 1
+                            last_capture_time = current_time
+                            print(f"✓ Sample {samples_captured}/{required_samples} captured")
+                            
+                            # Flash green to indicate capture
+                            cv2.rectangle(display_frame, (left-5, top-5), (right+5, bottom+5), 
+                                        (0, 255, 0), 4)
+                    
+                    # Show instruction
+                    if liveness['total_blinks'] < 2:
+                        cv2.putText(display_frame, "Please blink naturally", 
+                                   (10, 120), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2)
                 
-                if not face_locations:
-                    print(f"No face detected, retrying... (sample {sample_count + 1}/5)")
-                    failed_attempts += 1
-                    time.sleep(0.2)
-                    continue
-                
-                # 👉 FIX #1: define face_location
-                face_location = face_locations[0]
-
-                # 👉 FIX #2: define landmarks before using them
-                landmarks = face_recognition_module.get_face_landmarks(frame, face_location)
-
-                if landmarks is None:
-                    print("Landmarks not detected, retrying...")
-                    failed_attempts += 1
-                    time.sleep(0.2)
-                    continue
-
-                # Perform liveness check
-                
-                liveness_result = anti_spoofing_module.perform_liveness_check(frame, face_location, landmarks)
-                
-                if liveness_result['overall_score'] < 0.5:
-                    print(f"Liveness check failed for sample {sample_count + 1}. Score: {liveness_result['overall_score']:.2f}")
-                    failed_attempts += 1
-                    time.sleep(0.2)
-                    continue
-                
-                # Get face encoding using the correct method
-                encoding = face_recognition_module.get_face_encoding(frame, face_location)
-                
-                if encoding is not None:
-                    face_encodings.append(encoding)
-                    sample_count += 1
-                    print(f"Captured sample {sample_count}/5 - Liveness score: {liveness_result['overall_score']:.2f}")
-                    time.sleep(0.5)  # Delay between samples
+                elif len(face_locations) == 0:
+                    cv2.putText(display_frame, "No face detected - look at camera", 
+                               (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
                 else:
-                    failed_attempts += 1
-                    time.sleep(0.2)
-# #########
-
-            video_capture.release()  # Release camera after registration
+                    cv2.putText(display_frame, "Multiple faces - only one person please", 
+                               (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
+                
+                # Show time remaining
+                remaining = int(max_time - elapsed)
+                cv2.putText(display_frame, f"Time: {remaining}s", 
+                           (display_frame.shape[1] - 100, 30), 
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
+                
+                # Display frame
+                cv2.imshow('Registration - Face Capture', display_frame)
+                
+                # Check for quit
+                key = cv2.waitKey(1) & 0xFF
+                if key == ord('q') or key == 27:  # q or ESC
+                    result['message'] = "Registration cancelled"
+                    break
             
-            if len(face_encodings) < 5:
-                return {
-                    'success': False,
-                    'message': f"Could not capture enough face samples. Got {len(face_encodings)}/5. Please try again."
-                }
+            # Clean up
+            cv2.destroyAllWindows()
+            video_capture.release()
             
-            # Average the face encodings
-            average_encoding = np.mean(face_encodings, axis=0)
+            # Check if enough samples
+            if samples_captured < required_samples:
+                if not result['message']:
+                    result['message'] = f"Not enough samples. Got {samples_captured}/{required_samples}"
+                return result
             
-            # Hash password and save user
-            #password_hash = encryption_manager.hash_password(password)
+            # Create user in database
+            user_id = db_manager.create_user(username, password)
+            if user_id is None:
+                result['message'] = "Failed to create user account"
+                return result
             
-            result = db_manager.create_user(username, password)#, average_encoding)
+            # Store face embeddings
+            if not db_manager.store_face_embeddings(user_id, face_encodings):
+                result['message'] = "Failed to store facial data"
+                return result
             
-            if result is None:
-                return {'success': False, 'message': 'Username already exists or could not create user'}
-
-             # Store face embeddings captured during registration
-            if not db_manager.store_face_embeddings(result, face_encodings):
-                return {'success': False, 'message': 'Failed to store facial data'}
-            
-            print("User created successfully with ID:", result)
-
-            # Generate TOTP secret
+            # Generate and store TOTP secret
             secret = totp_handler.generate_secret()
+            if not db_manager.store_totp_secret(user_id, secret):
+                result['message'] = "Failed to store TOTP secret"
+                return result
+            
+            # Generate QR code
             qr_image = totp_handler.generate_qr_code(secret, username)
             
-            # Store TOTP secret
-            db_manager.store_totp_secret(result, secret)
+            result['success'] = True
+            result['message'] = "Registration successful!"
+            result['qr_code'] = qr_image
+            result['secret'] = secret
+            result['user_id'] = user_id
             
-            return {
-                'success': True,
-                'message': 'User registered successfully!',
-                'qr_code': qr_image,
-                'secret': secret,
-                'user_id': result
-            }
+            print(f"✓ User '{username}' registered successfully!")
+            return result
             
         except Exception as e:
-            return {
-                'success': False,
-                'message': f"Registration error: {str(e)}"
-            }
+            import traceback
+            traceback.print_exc()
+            result['message'] = f"Registration error: {str(e)}"
+            return result
     
-
     def authenticate_user(self, username: str, password: str, 
                          video_capture: cv2.VideoCapture) -> Dict:
         """
-        Authenticate user with facial recognition, anti-spoofing, and TOTP
-        Returns dict with authentication status
+        Authenticate user with facial recognition and liveness detection
+        Requires 2 blinks and head movement within 60 seconds
         """
         result = {
             'success': False,
@@ -346,150 +232,223 @@ class AuthenticationSystem:
             'liveness_score': 0.0
         }
         
-        # Verify password
-        user_id = db_manager.verify_user_password(username, password)
-        if user_id is None:
-            result['message'] = "Invalid username or password"
-            return result
-        
-        # Check if account is locked
-        if db_manager.check_account_locked(user_id):
-            result['message'] = "Account locked due to failed attempts. Try again later."
-            return result
-        
-        # Get stored face encodings
-        known_encodings = db_manager.get_face_embeddings(user_id)
-        if not known_encodings:
-            result['message'] = "No facial data found for user"
-            return result
-        
-        # Facial recognition with anti-spoofing
-        print("Performing facial recognition with liveness detection...")
-        face_verified = False
-        liveness_passed = False
-        attempts = 0
-        max_attempts = 50  # About 5 seconds at 10 FPS
-        
-        anti_spoofing_module.reset_counters()
-        
-        while attempts < max_attempts:
-            ret, frame = video_capture.read()
-            if not ret:
-                result['message'] = "Camera error"
+        try:
+            # Verify password first
+            user_id = db_manager.verify_user_password(username, password)
+            if user_id is None:
+                result['message'] = "Invalid username or password"
                 return result
             
-            # Detect face
-            face_locations = face_recognition_module.detect_faces(frame)
+            # Check if account is locked
+            if db_manager.check_account_locked(user_id):
+                result['message'] = "Account locked due to failed attempts. Try again later."
+                return result
             
-            if len(face_locations) != 1:
-                cv2.putText(frame, "Position your face in frame", (10, 30),
-                           cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
-                cv2.imshow('Authentication', frame)
-                if cv2.waitKey(1) & 0xFF == ord('q'):
-                    result['message'] = "Authentication cancelled"
-                    return result
-                attempts += 1
-                continue
+            # Get stored face encodings
+            known_encodings = db_manager.get_face_embeddings(user_id)
+            if not known_encodings:
+                result['message'] = "No facial data found for user"
+                return result
             
-            face_location = face_locations[0]
+            print(f"\n=== AUTHENTICATING: {username} ===")
+            print(f"Found {len(known_encodings)} stored face encodings")
             
-            # Get encoding
-            encoding = face_recognition_module.get_face_encoding(frame, face_location)
+            # Reinitialize camera
+            video_capture.release()
+            time.sleep(0.3)
+            video_capture = cv2.VideoCapture(CAMERA_INDEX, cv2.CAP_DSHOW)
             
-            if encoding is not None:
-                # Compare with stored encodings
-                match = face_recognition_module.compare_faces(known_encodings, encoding)
+            if not video_capture.isOpened():
+                result['message'] = "Failed to open camera"
+                return result
+            
+            video_capture.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
+            video_capture.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+            
+            # Warm up
+            for _ in range(10):
+                video_capture.read()
+            
+            # Reset anti-spoofing
+            anti_spoofing_module.reset_counters()
+            
+            # Create window
+            cv2.namedWindow('Authentication', cv2.WINDOW_NORMAL)
+            cv2.resizeWindow('Authentication', 640, 480)
+            
+            # State tracking
+            face_verified = False
+            face_match_count = 0
+            face_match_threshold = 3
+            liveness_passed = False
+            
+            max_time = 60  # 60 seconds
+            start_time = time.time()
+            
+            print("Please look at the camera, blink 2 times, and move your head slightly.")
+            
+            while time.time() - start_time < max_time:
+                ret, frame = video_capture.read()
+                if not ret or frame is None:
+                    continue
                 
-                if match:
-                    # Get landmarks for liveness
+                frame = cv2.flip(frame, 1)
+                display_frame = frame.copy()
+                
+                # Detect faces
+                face_locations = face_recognition_module.detect_faces(frame)
+                
+                if len(face_locations) == 1:
+                    face_location = face_locations[0]
+                    top, right, bottom, left = face_location
+                    
+                    # Get landmarks
                     landmarks = face_recognition_module.get_face_landmarks(frame, face_location)
                     
-                    if landmarks:
-                        # Perform liveness check
-                        liveness = anti_spoofing_module.perform_liveness_check(
-                            frame, face_location, landmarks
-                        )
-                        
-                        result['liveness_score'] = liveness['overall_score']
-                        
-                        # Display liveness info
-                        info_text = f"Blinks: {liveness['total_blinks']} | Score: {liveness['overall_score']:.2f}"
-                        cv2.putText(frame, info_text, (10, 30),
-                                   cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
-                        
-                        # Check if liveness passed
-                        if liveness['overall_score'] >= 0.6:
-                            face_verified = True
-                            liveness_passed = True
-                            face_recognition_module.draw_face_box(
-                                frame, face_location, "Verified", (0, 255, 0)
-                            )
-                            cv2.imshow('Authentication', frame)
-                            cv2.waitKey(500)
-                            break
-                        else:
-                            cv2.putText(frame, "Please blink and move your head", (10, 60),
-                                       cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 165, 255), 2)
+                    # Face matching
+                    encoding = face_recognition_module.get_face_encoding(frame, face_location)
+                    face_match = False
                     
-                    face_recognition_module.draw_face_box(frame, face_location, "Face Match")
-                else:
-                    face_recognition_module.draw_face_box(
-                        frame, face_location, "Unknown", (0, 0, 255)
+                    if encoding is not None:
+                        match = face_recognition_module.compare_faces(known_encodings, encoding)
+                        if match:
+                            face_match = True
+                            face_match_count += 1
+                            if face_match_count >= face_match_threshold:
+                                face_verified = True
+                        else:
+                            face_match_count = max(0, face_match_count - 1)
+                    
+                    # Liveness check
+                    liveness = anti_spoofing_module.perform_liveness_check(
+                        frame, face_location, landmarks
                     )
+                    
+                    if liveness['is_live']:
+                        liveness_passed = True
+                    
+                    result['liveness_score'] = liveness['overall_score']
+                    
+                    # UI Colors
+                    if face_verified and liveness_passed:
+                        color = (0, 255, 0)  # Green - all good
+                    elif face_match:
+                        color = (0, 255, 255)  # Yellow - face matches
+                    else:
+                        color = (0, 0, 255)  # Red - no match
+                    
+                    cv2.rectangle(display_frame, (left, top), (right, bottom), color, 2)
+                    
+                    # Show status
+                    cv2.putText(display_frame, "BLINK 2 TIMES & MOVE HEAD", 
+                               (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
+                    
+                    # Blink status
+                    blink_text = f"Blinks: {liveness['total_blinks']}/2"
+                    blink_color = (0, 255, 0) if liveness['total_blinks'] >= 2 else (255, 255, 255)
+                    cv2.putText(display_frame, blink_text, (10, 60), 
+                               cv2.FONT_HERSHEY_SIMPLEX, 0.6, blink_color, 2)
+                    
+                    # Movement status
+                    move_text = f"Movement: {liveness['total_movement']:.0f}/{liveness['movement_threshold']}px"
+                    move_color = (0, 255, 0) if liveness['has_movement'] else (255, 255, 255)
+                    cv2.putText(display_frame, move_text, (10, 90), 
+                               cv2.FONT_HERSHEY_SIMPLEX, 0.6, move_color, 2)
+                    
+                    # Face match status
+                    match_text = "Face: MATCHED" if face_verified else f"Face: Verifying... {face_match_count}/{face_match_threshold}"
+                    match_color = (0, 255, 0) if face_verified else (0, 165, 255)
+                    cv2.putText(display_frame, match_text, (10, 120), 
+                               cv2.FONT_HERSHEY_SIMPLEX, 0.6, match_color, 2)
+                    
+                    # Check success: Face verified + Liveness passed
+                    if face_verified and liveness_passed:
+                        cv2.putText(display_frame, "SUCCESS! Proceeding to OTP...", 
+                                   (10, 160), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), 2)
+                        cv2.imshow('Authentication', display_frame)
+                        cv2.waitKey(1500)
+                        
+                        result['success'] = True
+                        result['user_id'] = user_id
+                        result['requires_totp'] = True
+                        result['message'] = "Face and liveness verified. Enter TOTP code."
+                        break
+                
+                else:
+                    msg = "No face detected" if len(face_locations) == 0 else "Multiple faces"
+                    cv2.putText(display_frame, msg, (10, 30), 
+                               cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
+                
+                # Time remaining
+                remaining = int(max_time - (time.time() - start_time))
+                cv2.putText(display_frame, f"Time: {remaining}s", 
+                           (display_frame.shape[1] - 100, 30), 
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
+                
+                cv2.imshow('Authentication', display_frame)
+                
+                key = cv2.waitKey(1) & 0xFF
+                if key == ord('q') or key == 27:
+                    result['message'] = "Authentication cancelled"
+                    break
             
-            cv2.imshow('Authentication', frame)
-            if cv2.waitKey(1) & 0xFF == ord('q'):
-                result['message'] = "Authentication cancelled"
-                return result
+            cv2.destroyAllWindows()
+            video_capture.release()
             
-            attempts += 1
-        
-        cv2.destroyAllWindows()
-        
-        if not face_verified or not liveness_passed:
-            result['message'] = "Facial verification failed or spoofing detected"
-            db_manager.log_login_attempt(user_id, False, "face")
-            
-            # Check failed attempts
-            user_info = db_manager.get_user_by_username(username)
-            if user_info and user_info[2] >= MAX_LOGIN_ATTEMPTS:
-                db_manager.lock_account(user_id, LOCKOUT_DURATION)
-                result['message'] = "Too many failed attempts. Account locked."
+            # Handle failure
+            if not result['success']:
+                reasons = []
+                if not face_verified:
+                    reasons.append("Face not recognized")
+                if not liveness_passed:
+                    blinks = anti_spoofing_module.total_blinks
+                    movement = anti_spoofing_module.total_movement
+                    reasons.append(f"Liveness failed (blinks: {blinks}/2, movement: {movement:.0f}px)")
+                
+                if not reasons:
+                    reasons.append("Authentication timeout")
+                
+                result['message'] = " | ".join(reasons)
+                db_manager.log_login_attempt(user_id, False, "face")
+                
+                # Check failed attempts
+                user_info = db_manager.get_user_by_username(username)
+                if user_info and user_info[2] >= MAX_LOGIN_ATTEMPTS:
+                    db_manager.lock_account(user_id, LOCKOUT_DURATION)
+                    result['message'] = "Too many failed attempts. Account locked."
+                
+                print(f"✗ Authentication failed: {result['message']}")
             
             return result
-        
-        # Face verified - now require TOTP
-        result['user_id'] = user_id
-        result['requires_totp'] = True
-        result['message'] = "Face verified. Enter TOTP code."
-        
-        return result
+            
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            result['message'] = f"Authentication error: {str(e)}"
+            return result
     
     def verify_totp(self, user_id: int, otp_code: str) -> Dict:
-        """
-        Verify TOTP code for two-factor authentication
-        """
+        """Verify TOTP code for two-factor authentication"""
         result = {
             'success': False,
             'message': ''
         }
         
-        # Get TOTP secret
         secret = db_manager.get_totp_secret(user_id)
-        print("secret:", repr(secret))
         if secret:
             secret = secret.strip()
+        
         if not secret:
             result['message'] = "TOTP not configured for user"
             return result
         
-        # Verify OTP
         if totp_handler.verify_otp(secret, otp_code):
             db_manager.log_login_attempt(user_id, True, "face+totp")
             self.current_user_id = user_id
             self.session_start_time = time.time()
             result['success'] = True
             result['message'] = "Authentication successful"
+            print(f"✓ TOTP verified for user {user_id}")
         else:
             db_manager.log_login_attempt(user_id, False, "totp")
             result['message'] = "Invalid TOTP code"

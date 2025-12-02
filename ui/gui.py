@@ -956,13 +956,14 @@ class FaceLockGUI:
         self.root.after(0, self._handle_register_result, result)
     
     def _handle_register_result(self, result):
-        """Handle registration result"""
+        """Handle registration result - FIXED key names"""
         if result['success']:
+            # Use correct keys from auth_system
             self.show_qr_code_screen(result['qr_code'], result['secret'])
         else:
             self.status_label.config(text=result['message'], fg='#e74c3c')
             messagebox.showerror("Registration Failed", result['message'])
-    
+
     def verify_totp_code(self):
         """Verify entered TOTP code"""
         otp_code = self.otp_entry.get().strip()
