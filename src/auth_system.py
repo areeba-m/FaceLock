@@ -308,9 +308,11 @@ class AuthenticationSystem:
             if not db_manager.store_face_embeddings(result, face_encodings):
                 return {'success': False, 'message': 'Failed to store facial data'}
             
+            print("User created successfully with ID:", result)
+
             # Generate TOTP secret
             secret = totp_handler.generate_secret()
-            qr_image = totp_handler.generate_qr_code(username, secret)
+            qr_image = totp_handler.generate_qr_code(secret, username)
             
             # Store TOTP secret
             db_manager.store_totp_secret(result, secret)
