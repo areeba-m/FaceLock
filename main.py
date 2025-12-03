@@ -8,8 +8,8 @@ import os
 # Add project root to path
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from ui.gui import run_gui
-
+# from ui.gui import run_gui
+from ui.gui_pyside6 import run_gui
 
 def main():
     """Main application entry point"""

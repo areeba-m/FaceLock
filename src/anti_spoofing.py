@@ -35,7 +35,7 @@ class AntiSpoofingModule:
         (self.R_start, self.R_end) = face_utils.FACIAL_LANDMARKS_IDXS['right_eye']
         
         # Blink detection parameters - based on research papers
-        self.blink_thresh = 0.21  # EAR threshold (research suggests 0.2-0.25)
+        self.blink_thresh = 0.18  # EAR threshold (research suggests 0.2-0.25)
         self.succ_frame = 2  # Consecutive frames below threshold to count as blink
         self.count_frame = 0  # Current consecutive frames below threshold
         self.total_blinks = 0
